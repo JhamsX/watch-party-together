@@ -1,0 +1,24 @@
+[Unit]
+Description=together. Watch Party Node.js API and Socket.IO service
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=watchparty
+Group=www-data
+WorkingDirectory=/var/www/watch-party/server
+EnvironmentFile=/var/www/watch-party/server/.env
+ExecStart=/usr/bin/node /var/www/watch-party/server/src/index.js
+Restart=always
+RestartSec=4
+KillSignal=SIGTERM
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/www/watch-party/server
+
+[Install]
+WantedBy=multi-user.target

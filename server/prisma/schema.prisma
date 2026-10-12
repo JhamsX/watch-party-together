@@ -1,0 +1,107 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+model User {
+  id           String          @id @default(cuid()) @db.VarChar(30)
+  email        String?         @unique @db.VarChar(191)
+  displayName  String          @db.VarChar(48)
+  passwordHash String?         @db.VarChar(255)
+  isGuest      Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  rooms        Room[]          @relation("RoomOwner")
+  messages     RoomMessage[]
+  playlists    Playlist[]
+
+  @@index([displayName])
+  @@map("users")
+}
+
+model Room {
+  id                    String       @id @default(cuid()) @db.VarChar(30)
+  code                  String       @unique @db.VarChar(10)
+  name                  String       @db.VarChar(80)
+  isPublic              Boolean      @default(false)
+  passwordHash          String?      @db.VarChar(255)
+  hostTokenHash         String       @db.Char(64)
+  allowEveryoneControls Boolean      @default(false)
+  currentVideoUrl       String?      @db.VarChar(2048)
+  currentVideoTitle     String?      @db.VarChar(200)
+  ownerId               String       @db.VarChar(30)
+  owner                 User         @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  videos                RoomVideo[]
+  messages              RoomMessage[]
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  lastActivityAt        DateTime     @default(now())
+
+  @@index([isPublic, createdAt])
+  @@index([ownerId, createdAt])
+  @@index([lastActivityAt])
+  @@map("rooms")
+}
+
+model RoomVideo {
+  id        String   @id @default(cuid()) @db.VarChar(30)
+  roomId    String   @db.VarChar(30)
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  url       String   @db.VarChar(2048)
+  title     String   @db.VarChar(200)
+  provider  String   @db.VarChar(24)
+  position  Int      @default(0)
+  addedBy   String   @db.VarChar(48)
+  createdAt DateTime @default(now())
+
+  @@index([roomId, position])
+  @@map("room_videos")
+}
+
+model RoomMessage {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  roomId      String   @db.VarChar(30)
+  room        Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId      String?  @db.VarChar(30)
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  displayName String   @db.VarChar(48)
+  content     String   @db.VarChar(500)
+  kind        String   @default("chat") @db.VarChar(16)
+  createdAt   DateTime @default(now())
+
+  @@index([roomId, createdAt])
+  @@map("room_messages")
+}
+
+model Playlist {
+  id        String         @id @default(cuid()) @db.VarChar(30)
+  userId    String         @db.VarChar(30)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String         @db.VarChar(80)
+  videos    PlaylistVideo[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([userId, updatedAt])
+  @@map("playlists")
+}
+
+model PlaylistVideo {
+  id         String   @id @default(cuid()) @db.VarChar(30)
+  playlistId String   @db.VarChar(30)
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  url        String   @db.VarChar(2048)
+  title      String   @db.VarChar(200)
+  provider   String   @db.VarChar(24)
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([playlistId, position])
+  @@map("playlist_videos")
+}

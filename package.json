@@ -1,0 +1,19 @@
+{
+  "name": "together-watch-party",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time synchronized watch party MVP with MySQL, Prisma, and Socket.IO",
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c green,cyan \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "start": "npm --prefix server run start",
+    "db:generate": "npm --prefix server run db:generate",
+    "db:migrate": "npm --prefix server run db:migrate --",
+    "db:deploy": "npm --prefix server run db:deploy",
+    "db:studio": "npm --prefix server run db:studio"
+  },
+  "devDependencies": { "concurrently": "^9.1.2" }
+}
