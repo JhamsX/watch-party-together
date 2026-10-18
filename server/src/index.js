@@ -10,11 +10,89 @@ import { rateLimit } from 'express-rate-limit';
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdirSync } from 'node:fs';
+import multer from 'multer';
+import path from 'node:path';
 
 const prisma = new PrismaClient();
 const app = express();
+const currentFile = fileURLToPath(import.meta.url);
+const currentDirectory = path.dirname(currentFile);
+
+const UPLOAD_DIR = path.resolve(
+  currentDirectory,
+  '../uploads'
+);
+
+mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const MAX_VIDEO_SIZE = Number(
+  process.env.MAX_VIDEO_SIZE || 2147483648
+); // 2 GiB default
+
+const allowedExtensions = new Set([
+  '.mp4',
+  '.webm',
+  '.ogg',
+  '.ogv',
+  '.m4v',
+  '.mov'
+]);
+
+const videoStorage = multer.diskStorage({
+  destination: (_req, _file, callback) => {
+    callback(null, UPLOAD_DIR);
+  },
+
+  filename: (_req, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+
+    // Never use the original filename as the disk filename.
+    callback(null, `${crypto.randomUUID()}${extension}`);
+  }
+});
+
+const videoUpload = multer({
+  storage: videoStorage,
+  limits: {
+    fileSize: MAX_VIDEO_SIZE,
+    files: 1
+  },
+  fileFilter: (_req, file, callback) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+
+    if (!allowedExtensions.has(extension)) {
+      return callback(
+        new Error('Unsupported video format. Use MP4, WebM, OGG, OGV, M4V, or MOV.')
+      );
+    }
+
+    if (
+      !file.mimetype.startsWith('video/') &&
+      file.mimetype !== 'application/octet-stream'
+    ) {
+      return callback(new Error('The uploaded file must be a video.'));
+    }
+
+    callback(null, true);
+  }
+});
+
+// Serve video files with HTTP byte-range support for seeking.
+app.use(
+  '/uploads',
+  express.static(UPLOAD_DIR, {
+    acceptRanges: true,
+    fallthrough: false,
+    index: false,
+    maxAge: '1h',
+    setHeaders(res) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+  })
+);
+
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3001);
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173';
@@ -194,6 +272,10 @@ function requireAuth(req, res, next) {
 function sendError(res, err, fallback = 'Something went wrong.') {
   if (err instanceof z.ZodError) return res.status(400).json({ error: err.issues[0]?.message || 'Invalid input.' });
   if (err instanceof InputError) return res.status(400).json({ error: err.message });
+  if (err?.name === 'PrismaClientInitializationError' || err?.code === 'P1000' || err?.code === 'P1010') {
+    console.error(err);
+    return res.status(503).json({ error: 'Database access failed. Check DATABASE_URL credentials and ensure the MySQL user can access the watchparty database.' });
+  }
   console.error(err);
   return res.status(500).json({ error: fallback });
 }
@@ -315,6 +397,155 @@ app.post('/api/rooms', roomCreateLimiter, async (req, res) => {
     res.status(201).json({ room: publicRoom(room), hostToken, inviteUrl: `${CLIENT_ORIGIN.split(',')[0].trim().replace(/:\/\//, '://')}/room/${room.code}` });
   } catch (err) { sendError(res, err, 'Could not create the room.'); }
 });
+
+
+app.post(
+  '/api/rooms/:code/upload',
+  rateLimit({
+    windowMs: 60_000,
+    limit: 5,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false
+  }),
+  async (req, res) => {
+    let uploadedFile = null;
+
+    try {
+      const code = String(req.params.code || '').toUpperCase();
+
+      // Only the original host, identified by their secret host token,
+      // can upload to this room.
+      const room = await prisma.room.findUnique({
+        where: { code }
+      });
+
+      if (!room) {
+        return res.status(404).json({ error: 'Room not found.' });
+      }
+
+      const hostToken = req.get('X-Host-Token') || '';
+
+      if (
+        !hostToken ||
+        !constantTimeEqual(
+          sha256(hostToken),
+          room.hostTokenHash
+        )
+      ) {
+        return res.status(403).json({
+          error: 'Only the host can upload videos.'
+        });
+      }
+
+      // Parse the multipart upload only after checking host access.
+      await new Promise((resolve, reject) => {
+        videoUpload.single('video')(req, res, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      uploadedFile = req.file;
+
+      if (!uploadedFile) {
+        return res.status(400).json({
+          error: 'Choose a video file to upload.'
+        });
+      }
+
+      const roomId = room.id;
+      const title = path
+        .parse(uploadedFile.originalname)
+        .name
+        .replace(/[\x00-\x1f]/g, '')
+        .trim()
+        .slice(0, 200) || 'Uploaded video';
+
+      const videoUrl = `/uploads/${uploadedFile.filename}`;
+
+      const position = await prisma.roomVideo.count({
+        where: { roomId }
+      });
+
+      // Save metadata in MySQL. The video bytes stay on disk.
+      const video = await prisma.roomVideo.create({
+        data: {
+          roomId,
+          url: videoUrl,
+          title,
+          provider: 'upload',
+          addedBy: 'Host',
+          position
+        }
+      });
+
+      const updatedRoom = await prisma.room.update({
+        where: { id: roomId },
+        data: {
+          currentVideoUrl: videoUrl,
+          currentVideoTitle: title
+        }
+      });
+
+      // Uploaded videos start paused. The host can press Play.
+      const state = {
+        playing: false,
+        position: 0,
+        updatedAt: Date.now(),
+        sequence:
+          (playbackStates.get(roomId)?.sequence || 0) + 1,
+        videoUrl,
+        videoTitle: title
+      };
+
+      playbackStates.set(roomId, state);
+
+      // Notify everyone currently connected to this room.
+      io.to(roomId).emit('room:media', {
+        room: publicRoom(updatedRoom),
+        video,
+        playback: state
+      });
+
+      io.to(roomId).emit(
+        'queue:changed',
+        await normalizedRoomQueue(roomId)
+      );
+
+      return res.status(201).json({
+        ok: true,
+        video,
+        message: 'Video uploaded and loaded for everyone.'
+      });
+    } catch (err) {
+      // Remove an uploaded file if processing failed before completion.
+      if (uploadedFile?.path) {
+        const { unlink } = await import('node:fs/promises');
+        await unlink(uploadedFile.path).catch(() => {});
+      }
+
+      if (err instanceof multer.MulterError) {
+        const message =
+          err.code === 'LIMIT_FILE_SIZE'
+            ? `Video exceeds the ${Math.round(MAX_VIDEO_SIZE / 1024 / 1024)} MB upload limit.`
+            : 'Upload failed. Check the file and try again.';
+
+        return res.status(400).json({ error: message });
+      }
+
+      if (err.message?.startsWith('Unsupported video format') ||
+          err.message === 'The uploaded file must be a video.') {
+        return res.status(400).json({ error: err.message });
+      }
+
+      console.error('Video upload failed:', err);
+
+      return res.status(500).json({
+        error: 'Could not upload the video. Check server storage and database connectivity.'
+      });
+    }
+  }
+);
 
 app.get('/api/rooms/public', async (_req, res) => {
   try {
@@ -619,9 +850,6 @@ const maintenanceTimer = setInterval(() => cleanupExpiredRooms().catch((err) => 
 maintenanceTimer.unref();
 
 // Serve the built React frontend in production.
-const currentFile = fileURLToPath(import.meta.url);
-const currentDirectory = path.dirname(currentFile);
-
 const clientDistPath = path.resolve(
   currentDirectory,
   '../../client/dist'
