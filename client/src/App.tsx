@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type FormEvent } from 'react';
+import { ChangeEvent, useCallback, useEffect, useRef, useState, type ButtonHTMLAttributes, type FormEvent } from 'react';
 import { Link, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { io, type Socket } from 'socket.io-client';
 import {
@@ -70,7 +70,7 @@ function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: 
     <form className="form-stack" onSubmit={submit}>
       <label>Room name<input required minLength={2} maxLength={80} value={roomName} onChange={(e) => setRoomName(e.target.value)} placeholder="Friday night movie" /></label>
       <label>Your name<input required minLength={1} maxLength={48} value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="How friends will see you" /></label>
-      <label>Video link <span className="optional">optional · can add later</span><input value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="Paste a YouTube, media file, or embeddable player URL" /></label>
+      <label>Video link <span className="optional">optional · can add later</span><input value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="Paste a YouTube or direct video URL" /></label>
       <div className="privacy-row"><div className="privacy-icon"><Lock size={17} /></div><div className="privacy-copy"><strong>Private party</strong><span>Only people with your invite can find it.</span></div><button type="button" className={`toggle ${!isPublic ? 'toggle-on' : ''}`} aria-pressed={!isPublic} onClick={() => setIsPublic((v) => !v)}><span /></button></div>
       {!isPublic && <label>Room password <span className="optional">optional extra lock</span><input type="password" maxLength={72} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Leave blank to use invite link only" /></label>}
       {error && <div className="inline-error">{error}</div>}
@@ -141,6 +141,7 @@ function Home() {
 }
 
 function RoomPage() {
+  const [uploadingVideo, setUploadingVideo] = useState(false);
   const { code = '' } = useParams(); const navigate = useNavigate();
   const [socket, setSocket] = useState<Socket | null>(null);
   const [room, setRoom] = useState<Room | null>(null); const [participant, setParticipant] = useState<Participant | null>(null);
@@ -217,6 +218,75 @@ function RoomPage() {
       if (!result?.ok) showToast(result?.error || 'Could not load this video.'); else { setVideoInput(''); showToast('Video loaded for everyone.'); }
     });
   };
+  
+const uploadVideo = async (
+  event: ChangeEvent<HTMLInputElement>
+) => {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+
+  if (!file) return;
+
+  // Keep the initial client-side limit aligned with the server.
+  const maxBytes = 2 * 1024 * 1024 * 1024;
+
+  if (file.size > maxBytes) {
+    showToast('The video exceeds the 2 GB upload limit.');
+    input.value = '';
+    return;
+  }
+
+  if (!participant?.isHost) {
+    showToast('Only the host can upload videos.');
+    input.value = '';
+    return;
+  }
+
+  const hostToken =
+    sessionStorage.getItem(`together_host_${code}`) || '';
+
+  if (!hostToken) {
+    showToast('Host credentials are missing. Reopen your host session.');
+    input.value = '';
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('video', file);
+
+  setUploadingVideo(true);
+
+  try {
+    const response = await fetch(
+      `/api/rooms/${encodeURIComponent(code)}/upload`,
+      {
+        method: 'POST',
+        headers: {
+          'X-Host-Token': hostToken
+        },
+        body: formData
+      }
+    );
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || 'Video upload failed.');
+    }
+
+    showToast('Video uploaded and loaded for everyone.');
+  } catch (error) {
+    showToast(
+      error instanceof Error
+        ? error.message
+        : 'Could not upload the video.'
+    );
+  } finally {
+    setUploadingVideo(false);
+    input.value = '';
+  }
+};
+
   const addQueue = (event: FormEvent) => {
     event.preventDefault(); if (!queueInput.trim() || !socket || !participant?.isHost) return;
     socket.emit('queue:add', { url: queueInput.trim() }, (result: any) => {
@@ -261,6 +331,30 @@ function RoomPage() {
         <div className="media-info-row"><div className="media-info-left"><span className="media-type-icon"><Film size={17} /></span><div><strong>{room.currentVideoUrl ? (room.currentVideoTitle || 'Untitled video') : 'Nothing playing just yet'}</strong><span>{room.currentVideoUrl ? `${playback.playing ? 'Playing' : 'Paused'} · ${playback.playing ? 'everyone is in sync' : 'waiting for the host'}` : 'Host can add a video link below'}</span></div></div><span className="sync-status"><Radio size={13} /> {playback.playing ? 'SYNCING LIVE' : 'READY WHEN YOU ARE'}</span></div>
         {participant.isHost ? <form className="video-add-form" onSubmit={setVideo}><div className="video-add-icon"><Plus size={18} /></div><input value={videoInput} onChange={(e) => setVideoInput(e.target.value)} placeholder="Paste a YouTube or direct video URL…" aria-label="Video URL" /><Button type="submit" className="button-primary" disabled={!videoInput.trim()}><Play size={14} fill="currentColor" /> Load for everyone</Button></form> : <div className="host-message"><Lock size={14} /><span>The host controls what's playing. Have a suggestion? Drop the link in chat.</span></div>}
         <div className="room-bottom-meta"><span><Lock size={13} /> {room.isPublic ? 'Public room' : 'Invite-only room'}</span><span><Users size={13} /> {participants.length} connected</span><span><Radio size={13} /> Room started {roomAge}</span><span className="room-meta-code">#{room.code}</span></div>
+        {participant.isHost && (
+  <div className="video-upload-row">
+    <label className="video-upload-control">
+      <Film size={17} />
+
+      <span>
+        {uploadingVideo
+          ? 'Uploading video…'
+          : 'Upload a video from your device'}
+      </span>
+
+      <input
+        type="file"
+        accept="video/mp4,video/webm,video/ogg,video/quicktime,.m4v,.ogv"
+        disabled={uploadingVideo}
+        onChange={uploadVideo}
+      />
+    </label>
+
+    <span className="video-upload-hint">
+      MP4, WebM, OGG, OGV, M4V or MOV · Max 2 GB
+    </span>
+  </div>
+)}
       </section>
       <aside className={`party-panel ${mobilePanelOpen ? 'panel-open' : 'panel-closed'}`}>
         <div className="panel-top"><div className="panel-title-group"><span className="panel-online-dot" /><div><h2>Your party</h2><p>{participants.length} here right now</p></div></div><button className="icon-button panel-mobile-close" onClick={() => setMobilePanelOpen(false)} aria-label="Close party panel"><X size={18} /></button><button className="icon-button panel-options" onClick={() => setShowRoomSettings((v) => !v)} aria-label="Room options"><MoreHorizontal size={19} /></button></div>
