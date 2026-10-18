@@ -6,7 +6,7 @@ A full-stack watch-party application built with React + TypeScript, Vite, Node.j
 
 - Landing page, room creation, room-code joining, invitation links, guest display names, public/private visibility, and optional room passwords.
 - YouTube embeds through the official YouTube IFrame Player API, plus browser-playable direct `.mp4`, `.webm`, `.ogv`, and `.ogg` video URLs.
-- Host-controlled play/pause/seek/video changes, server-authoritative room events, periodic drift correction, and sync-on-join.
+- Host-only play/pause/seek/video changes, server-authoritative playback broadcasts to every room participant, one-second drift correction, and sync-on-join.
 - Room-isolated Socket.IO chat, emoji reactions, participant presence, host transfer/removal, and a persisted shared queue with host queue reordering.
 - MySQL schema and checked-in Prisma migration for users, rooms, room videos, room messages, saved playlists, and playlist videos.
 - Password hashing, JWT-based optional accounts, Zod validation, rate limits, security headers, room-code validation, room-scoped database queries, and parameterized ORM queries.
@@ -33,6 +33,28 @@ A fresh server restart clears active participants and transient playback clocks,
 - A browser with JavaScript enabled
 
 ## A. Install MySQL locally on Windows
+
+### If you already use XAMPP
+
+Start **MySQL** in the XAMPP Control Panel. In phpMyAdmin's SQL tab, create the app database and a local-only account (replace the example password with a strong value):
+
+```sql
+CREATE DATABASE watchparty
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
+CREATE USER 'watchparty_app'@'127.0.0.1'
+  IDENTIFIED BY 'replace_with_a_strong_password';
+
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, DROP,
+      REFERENCES, CREATE TEMPORARY TABLES, LOCK TABLES
+ON watchparty.* TO 'watchparty_app'@'127.0.0.1';
+FLUSH PRIVILEGES;
+```
+
+Keep XAMPP's MySQL port bound to the local machine; do not expose port 3306 to the Internet. In `server/.env`, use this account in `DATABASE_URL` and `DIRECT_URL` with host `127.0.0.1`, port `3306`, and database `watchparty`. The MySQL account must have the database migration privileges shown above.
+
+### Install a separate MySQL server
 
 1. Install **MySQL Community Server** using the official MySQL Installer or the MySQL Community Server package. Choose a strong root password and install it as a Windows service.
 2. Open MySQL Workbench or a terminal and sign in as `root`.
@@ -172,6 +194,27 @@ This message usually means the browser could not reach the Node API (rather than
 5. For local development, do not set `VITE_SERVER_URL` in `client/.env.local`; use the included Vite proxy. Restart `npm run dev` after changing environment files.
 
 If using a separately deployed frontend, set `VITE_SERVER_URL` to the reachable public API origin, rebuild the frontend, and set the server's `CLIENT_ORIGIN` to the exact frontend origin (including `https://` and port if applicable). Never set a browser-facing API URL to `localhost` unless the browser and API server are on the same computer.
+
+### Make a local XAMPP-backed site reachable on the web
+
+The XAMPP database can remain local while the Node server and built website run on the same Windows PC. For a public invite link, that PC and its Internet connection must stay on, and the Node server must stay running. A tunnel (for example, Cloudflare Tunnel) can publish the website without opening MySQL or forwarding database port 3306. Configure the tunnel's public hostname to forward to `http://localhost:3001`.
+
+For a temporary link without a domain, install `cloudflared`, then run this in a separate PowerShell window and keep it open:
+
+```powershell
+cloudflared tunnel --url http://localhost:3001
+```
+
+Copy the generated `https://…trycloudflare.com` URL. Use its exact origin for `CLIENT_ORIGIN` below. The tunnel may show an origin error until the production server starts. A new temporary URL is generated when the tunnel is restarted, so update `CLIENT_ORIGIN` and restart the app each time.
+
+For this single-origin setup:
+
+1. Set `NODE_ENV=production`, `PORT=3001`, and `CLIENT_ORIGIN=https://your-public-hostname` in `server/.env`. Keep `DATABASE_URL` and `DIRECT_URL` pointed at the local XAMPP database on `127.0.0.1:3306`, and set a new, private `JWT_SECRET`.
+2. From the project root, run `npm run db:generate`, `npm run db:deploy`, and `npm run build`.
+3. Start the production server with `npm start`, then configure the tunnel's public hostname to route to `http://localhost:3001`. Do not set `VITE_SERVER_URL` for this same-origin setup; the server serves the built frontend and handles the API and Socket.IO connection together.
+4. Open the public HTTPS hostname and create a room. Share that public URL, not a `localhost` link. Check `https://your-public-hostname/api/health` returns `{"status":"ok","database":"connected"}`.
+
+Do not expose the XAMPP/MySQL port publicly. If you move the Node server to a separate VPS or hosting provider, `127.0.0.1` refers to that remote machine, not your PC; use a database hosted alongside the app or a carefully secured private network rather than opening MySQL to the Internet. See the VPS instructions below for the separate-server deployment.
 
 ## Accounts and playlists
 

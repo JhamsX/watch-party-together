@@ -217,6 +217,13 @@ function liveState(roomId, room) {
   }
   return state;
 }
+
+function currentSnapshot(state) {
+  const now = Date.now();
+  const position = state.position + (state.playing ? Math.max(0, now - state.updatedAt) / 1000 : 0);
+  return { ...state, position, updatedAt: now };
+}
+
 function socketClientIp(socket) {
   if (process.env.TRUST_PROXY === '1') {
     const forwarded = socket.handshake.headers['x-forwarded-for'];
@@ -245,8 +252,7 @@ function requireParticipant(socket, ack) {
   return p;
 }
 function canControl(socket, participant) {
-  const room = socket.data.room;
-  return participant.isHost || Boolean(room?.allowEveryoneControls);
+  return participant.isHost; // host only
 }
 
 app.get('/api/health', async (_req, res) => {
@@ -435,10 +441,10 @@ io.on('connection', (socket) => {
       if (data.position !== undefined) state.position = data.position;
       if (data.action === 'play') state.playing = true;
       else if (data.action === 'pause') state.playing = false;
-      else if (data.action === 'sync' && data.playing !== undefined) state.playing = data.playing;
+      else if (data.playing !== undefined) state.playing = data.playing; // seek + sync keep host's real state
       state.updatedAt = Date.now(); state.sequence += 1;
       playbackStates.set(roomId, state);
-      socket.to(roomId).emit('playback:updated', { ...state, action: data.action });
+      io.to(roomId).emit('playback:updated', { ...state, action: data.action });
       ack?.({ ok: true, sequence: state.sequence });
     } catch (err) { ackError(ack, err instanceof z.ZodError ? err.issues[0]?.message : 'Playback update failed.'); }
   });
@@ -534,21 +540,6 @@ io.on('connection', (socket) => {
       io.to(roomId).emit('queue:changed', await normalizedRoomQueue(roomId));
       ack?.({ ok: true });
     } catch (err) { ackError(ack, err instanceof z.ZodError ? err.issues[0]?.message : 'Could not reorder the queue.'); }
-  });
-
-  socket.on('room:update-settings', async (payload, ack) => {
-    try {
-      const p = requireParticipant(socket, ack); if (!p) return;
-      if (!p.isHost) return ackError(ack, 'Only the host can change room settings.');
-      if (!allowSocketEvent(socket, 10, 10_000)) return ackError(ack, 'Too many settings changes. Please wait a moment.');
-      const data = z.object({ allowEveryoneControls: z.boolean() }).parse(payload);
-      const room = await prisma.room.update({ where: { id: socket.data.room.id }, data });
-      for (const peer of io.sockets.sockets.values()) {
-        if (peer.data.room?.id === room.id) peer.data.room.allowEveryoneControls = room.allowEveryoneControls;
-      }
-      io.to(room.id).emit('room:settings', { allowEveryoneControls: room.allowEveryoneControls });
-      ack?.({ ok: true });
-    } catch (err) { ackError(ack, 'Could not update room settings.'); }
   });
 
   socket.on('room:kick', (payload, ack) => {

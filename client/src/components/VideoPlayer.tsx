@@ -123,7 +123,7 @@ export default function VideoPlayer({ url, title, canControl, isHost, playback, 
     try {
       const current = Number(player.getCurrentTime?.() || 0);
       syncGuard.current = true;
-      if (Math.abs(current - target) > 1.8) player.seekTo(target, true);
+      if (Math.abs(current - target) > 0.75) player.seekTo(target, true);
       if (playback.playing && player.getPlayerState?.() !== window.YT?.PlayerState?.PLAYING) player.playVideo();
       if (!playback.playing && player.getPlayerState?.() !== window.YT?.PlayerState?.PAUSED && player.getPlayerState?.() !== window.YT?.PlayerState?.CUED) player.pauseVideo();
       window.setTimeout(() => { syncGuard.current = false; }, 450);
@@ -136,7 +136,7 @@ export default function VideoPlayer({ url, title, canControl, isHost, playback, 
       const player = ytRef.current;
       if (!player || player.getPlayerState?.() !== window.YT?.PlayerState?.PLAYING) return;
       onCommand('sync', Number(player.getCurrentTime?.() || 0), true);
-    }, 2500);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [isHost, ready, isYoutube, onCommand]);
 
@@ -146,7 +146,7 @@ export default function VideoPlayer({ url, title, canControl, isHost, playback, 
       const video = videoRef.current;
       if (!video || video.paused || video.ended) return;
       onCommand('sync', video.currentTime, true);
-    }, 2500);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [isHost, isYoutube, url, onCommand]);
 
@@ -155,7 +155,7 @@ export default function VideoPlayer({ url, title, canControl, isHost, playback, 
     if (!video || isYoutube || !url) return;
     syncGuard.current = true;
     const target = desiredPosition(playback);
-    if (Number.isFinite(target) && Math.abs(video.currentTime - target) > 1.8) video.currentTime = target;
+    if (Number.isFinite(target) && Math.abs(video.currentTime - target) > 0.75) video.currentTime = target;
     if (playback.playing) void video.play().catch(() => setPlayerError('Your browser blocked autoplay. Press play to continue.'));
     else video.pause();
     const release = window.setTimeout(() => { syncGuard.current = false; }, 300);
